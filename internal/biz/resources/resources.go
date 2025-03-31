@@ -3,8 +3,11 @@ package resources
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/project-kessel/inventory-api/internal/consumer"
+	"github.com/uptrace/bun/driver/pgdriver"
 
 	"github.com/google/uuid"
 
@@ -48,10 +51,12 @@ type Usecase struct {
 	log                         *log.Helper
 	Server                      server.Server
 	DisablePersistence          bool
+	Listener                    *pgdriver.Listener
 }
 
 func New(reporterResourceRepository ReporterResourceRepository, inventoryResourceRepository InventoryResourceRepository,
-	authz authzapi.Authorizer, eventer eventingapi.Manager, namespace string, logger log.Logger, disablePersistence bool) *Usecase {
+	authz authzapi.Authorizer, eventer eventingapi.Manager, namespace string, logger log.Logger, disablePersistence bool,
+	listener *pgdriver.Listener) *Usecase {
 	return &Usecase{
 		reporterResourceRepository:  reporterResourceRepository,
 		inventoryResourceRepository: inventoryResourceRepository,
@@ -60,6 +65,7 @@ func New(reporterResourceRepository ReporterResourceRepository, inventoryResourc
 		Namespace:                   namespace,
 		log:                         log.NewHelper(logger),
 		DisablePersistence:          disablePersistence,
+		Listener:                    listener,
 	}
 }
 
@@ -86,9 +92,40 @@ func (uc *Usecase) Create(ctx context.Context, m *model.Resource) (*model.Resour
 		if err != nil {
 			return nil, err
 		}
-	}
+		uc.log.WithContext(ctx).Infof("Created Resource: %v(%v)", m.ID, m.ResourceType)
 
-	uc.log.WithContext(ctx).Infof("Created Resource: %v(%v)", m.ID, m.ResourceType)
+		// TODO: listening should only happen when read-your-write is requested
+		// TODO: listening should happen before writing the resource to the database
+		uuidTx, err := uuid.NewV7()
+		if err != nil {
+			return nil, err
+		}
+
+		timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		uc.log.Debugf("Waiting for notification on channel %s for 30s", uuidTx.String())
+		err = uc.Listener.Listen(timeoutCtx, uuidTx.String())
+		if err != nil {
+			return nil, fmt.Errorf("error listening for notification: %w", err)
+		}
+		defer uc.Listener.Unlisten(ctx, uuidTx.String())
+
+		for notification := range uc.Listener.Channel() {
+			if notification.Channel == uuidTx.String() {
+				uc.log.Debugf("Received notification: %v, payload %v", notification.Channel, notification.Payload)
+				break
+			}
+			if timeoutCtx.Err() != nil {
+				if timeoutCtx.Err() == context.DeadlineExceeded {
+					uc.log.WithContext(ctx).Info("Timeout occurred while waiting for notification")
+				} else {
+					uc.log.WithContext(ctx).Errorf("Context error while waiting for notification: %v", timeoutCtx.Err())
+				}
+				break
+			}
+		}
+	}
 	return ret, nil
 }
 

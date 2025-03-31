@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/project-kessel/inventory-api/internal/consumer"
+	"github.com/uptrace/bun/driver/pgdriver"
 
 	"github.com/project-kessel/inventory-api/cmd/common"
 	relationshipsctl "github.com/project-kessel/inventory-api/internal/biz/relationships"
@@ -32,6 +33,7 @@ import (
 	"github.com/project-kessel/inventory-api/internal/errors"
 	"github.com/project-kessel/inventory-api/internal/eventing"
 	eventingapi "github.com/project-kessel/inventory-api/internal/eventing/api"
+	"github.com/project-kessel/inventory-api/internal/eventing/pubsub"
 	"github.com/project-kessel/inventory-api/internal/middleware"
 	"github.com/project-kessel/inventory-api/internal/server"
 	"github.com/project-kessel/inventory-api/internal/storage"
@@ -142,6 +144,14 @@ func NewCommand(
 				return err
 			}
 
+			// TODO: Should not/Cannot spin up for sqlite, needs to be gracefully configured
+			pgDB, err := storage.NewBunDB(storageConfig, log.NewHelper(log.With(logger, "subsystem", "pgdriver")))
+			if err != nil {
+				return fmt.Errorf("error setting up pgdriver: %v", err)
+			}
+			listener := pgdriver.NewListener(pgDB)
+			notifier := pubsub.NewNotifier(pgDB)
+
 			// construct authn
 			authenticator, err := authn.New(authnConfig, log.NewHelper(log.With(logger, "subsystem", "authn")))
 			if err != nil {
@@ -163,7 +173,7 @@ func NewCommand(
 			}
 
 			if !storageOptions.DisablePersistence {
-				inventoryConsumer, err = consumer.New(consumerConfig, db, authzConfig, authorizer, log.NewHelper(log.With(logger, "subsystem", "inventoryConsumer")))
+				inventoryConsumer, err = consumer.New(consumerConfig, db, authzConfig, authorizer, log.NewHelper(log.With(logger, "subsystem", "inventoryConsumer")), notifier)
 				if err != nil {
 					return err
 				}
@@ -178,35 +188,35 @@ func NewCommand(
 
 			// wire together notificationsintegrations handling
 			notifs_repo := resourcerepo.New(db)
-			notifs_controller := resourcesctl.New(notifs_repo, inventoryresources_repo, authorizer, eventingManager, "notifications", log.With(logger, "subsystem", "notificationsintegrations_controller"), storageConfig.Options.DisablePersistence)
+			notifs_controller := resourcesctl.New(notifs_repo, inventoryresources_repo, authorizer, eventingManager, "notifications", log.With(logger, "subsystem", "notificationsintegrations_controller"), storageConfig.Options.DisablePersistence, listener)
 			notifs_service := notifssvc.New(notifs_controller)
 			pb.RegisterKesselNotificationsIntegrationServiceServer(server.GrpcServer, notifs_service)
 			pb.RegisterKesselNotificationsIntegrationServiceHTTPServer(server.HttpServer, notifs_service)
 
 			// wire together authz handling
 			authz_repo := resourcerepo.New(db)
-			authz_controller := resourcesctl.New(authz_repo, inventoryresources_repo, authorizer, eventingManager, "authz", log.With(logger, "subsystem", "authz_controller"), storageConfig.Options.DisablePersistence)
+			authz_controller := resourcesctl.New(authz_repo, inventoryresources_repo, authorizer, eventingManager, "authz", log.With(logger, "subsystem", "authz_controller"), storageConfig.Options.DisablePersistence, listener)
 			authz_service := authzsvc.New(authz_controller)
 			authz2.RegisterKesselCheckServiceServer(server.GrpcServer, authz_service)
 			authz2.RegisterKesselCheckServiceHTTPServer(server.HttpServer, authz_service)
 
 			// wire together hosts handling
 			hosts_repo := resourcerepo.New(db)
-			hosts_controller := resourcesctl.New(hosts_repo, inventoryresources_repo, authorizer, eventingManager, "hbi", log.With(logger, "subsystem", "hosts_controller"), storageConfig.Options.DisablePersistence)
+			hosts_controller := resourcesctl.New(hosts_repo, inventoryresources_repo, authorizer, eventingManager, "hbi", log.With(logger, "subsystem", "hosts_controller"), storageConfig.Options.DisablePersistence, listener)
 			hosts_service := hostssvc.New(hosts_controller)
 			pb.RegisterKesselRhelHostServiceServer(server.GrpcServer, hosts_service)
 			pb.RegisterKesselRhelHostServiceHTTPServer(server.HttpServer, hosts_service)
 
 			// wire together k8sclusters handling
 			k8sclusters_repo := resourcerepo.New(db)
-			k8sclusters_controller := resourcesctl.New(k8sclusters_repo, inventoryresources_repo, authorizer, eventingManager, "acm", log.With(logger, "subsystem", "k8sclusters_controller"), storageConfig.Options.DisablePersistence)
+			k8sclusters_controller := resourcesctl.New(k8sclusters_repo, inventoryresources_repo, authorizer, eventingManager, "acm", log.With(logger, "subsystem", "k8sclusters_controller"), storageConfig.Options.DisablePersistence, listener)
 			k8sclusters_service := k8sclusterssvc.New(k8sclusters_controller)
 			pb.RegisterKesselK8SClusterServiceServer(server.GrpcServer, k8sclusters_service)
 			pb.RegisterKesselK8SClusterServiceHTTPServer(server.HttpServer, k8sclusters_service)
 
 			// wire together k8spolicies handling
 			k8spolicies_repo := resourcerepo.New(db)
-			k8spolicies_controller := resourcesctl.New(k8spolicies_repo, inventoryresources_repo, authorizer, eventingManager, "acm", log.With(logger, "subsystem", "k8spolicies_controller"), storageConfig.Options.DisablePersistence)
+			k8spolicies_controller := resourcesctl.New(k8spolicies_repo, inventoryresources_repo, authorizer, eventingManager, "acm", log.With(logger, "subsystem", "k8spolicies_controller"), storageConfig.Options.DisablePersistence, listener)
 			k8spolicies_service := k8spoliciessvc.New(k8spolicies_controller)
 			pb.RegisterKesselK8SPolicyServiceServer(server.GrpcServer, k8spolicies_service)
 			pb.RegisterKesselK8SPolicyServiceHTTPServer(server.HttpServer, k8spolicies_service)

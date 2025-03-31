@@ -21,7 +21,7 @@ objects:
           bootstrap-servers: inventory-kafka-kafka-bootstrap:9092
           topic: outbox.event.kessel.tuples
         log:
-          level: "info"
+          level: "debug"
 
   - apiVersion: rbac.authorization.k8s.io/v1
     kind: Role
@@ -212,7 +212,7 @@ objects:
         table.include.list: public.outbox_events # Required for Debezium > v1.3.0
         transforms: outbox
         transforms.outbox.type: io.debezium.transforms.outbox.EventRouter
-        transforms.outbox.table.fields.additional.placement: operation:header
+        transforms.outbox.table.fields.additional.placement: operation:header, txId:header
         plugin.name: pgoutput
         heartbeat.interval.ms: ${DEBEZIUM_HEARTBEAT_INTERVAL_MS}
         heartbeat.action.query: ${DEBEZIUM_ACTION_QUERY}

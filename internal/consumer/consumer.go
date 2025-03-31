@@ -4,16 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"go.opentelemetry.io/otel"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"go.opentelemetry.io/otel"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/project-kessel/inventory-api/internal/authz"
 	"github.com/project-kessel/inventory-api/internal/authz/api"
 	"github.com/project-kessel/inventory-api/internal/biz/model"
+	"github.com/project-kessel/inventory-api/internal/eventing/pubsub"
 	kessel "github.com/project-kessel/relations-api/api/kessel/relations/v1beta1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -40,10 +42,11 @@ type InventoryConsumer struct {
 	Errors           chan error
 	MetricsCollector *MetricsCollector
 	Logger           *log.Helper
+	Notifier         *pubsub.Notifier
 }
 
 // New instantiates a new InventoryConsumer
-func New(config CompletedConfig, db *gorm.DB, authz authz.CompletedConfig, authorizer api.Authorizer, logger *log.Helper) (InventoryConsumer, error) {
+func New(config CompletedConfig, db *gorm.DB, authz authz.CompletedConfig, authorizer api.Authorizer, logger *log.Helper, notifier *pubsub.Notifier) (InventoryConsumer, error) {
 	logger.Info("Setting up kafka consumer")
 	consumer, err := kafka.NewConsumer(config.KafkaConfig)
 	if err != nil {
@@ -70,6 +73,7 @@ func New(config CompletedConfig, db *gorm.DB, authz authz.CompletedConfig, autho
 		Errors:           errChan,
 		MetricsCollector: &mc,
 		Logger:           logger,
+		Notifier:         notifier,
 	}, nil
 }
 
